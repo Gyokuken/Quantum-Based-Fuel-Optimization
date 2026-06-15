@@ -146,20 +146,4 @@ plausible but not calibrated to a specific vessel; data is synthetic; the QUBO i
 solved on a *classical* annealer (`neal`), not real quantum hardware — but the
 formulation is hardware-portable.
 
----
-
-## Roadmap
-
-- **Phase 1 — DONE:** synthetic ship data → fuel-rate model (R² ≈ 0.99) →
-  slow-steaming SA optimizer with deadline + CO₂, one-command demo + plot.
-- **Phase 2 — DONE:** genuine **QUBO** optimizers (PyQUBO + dwave-neal) for both
-  speed (2a) and **weather routing** (2b), validated against brute force. The same
-  QUBOs are portable to real D-Wave quantum hardware.
-- **Phase 3 — Dashboard:** Streamlit UI — pick ship + conditions + voyage,
-  see predicted fuel, click "Optimize", get the recommended speed/route + savings.
-
-### Possible Phase 2+ extensions
-- Multi-segment speed profile (a speed per leg under a total-time deadline).
-- Joint speed **and** route optimization in one QUBO.
-- Genetic-algorithm optimizer for a three-way comparison (SA vs GA vs QUBO).
-- Retrain the model on a real public dataset (e.g. FuelCast) to show transfer.
+STILL IN PROGRESS
