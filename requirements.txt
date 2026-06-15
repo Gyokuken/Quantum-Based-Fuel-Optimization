@@ -1,0 +1,19 @@
+# Phase 1 (core pipeline) -- all you need to run demo.py today
+numpy
+pandas
+scikit-learn
+joblib
+matplotlib
+
+# Phase 2 (quantum-inspired QUBO optimizers) -- installed and in use
+pyqubo
+dwave-neal
+
+# Phase 2 optional extras -- not required yet
+# xgboost
+# lightgbm
+# deap
+
+# Phase 3 (dashboard) -- not required yet
+# streamlit
+# plotly
