@@ -175,6 +175,39 @@ these constrained QUBOs more naturally — a nice illustration that different qu
 paradigms suit different problems. Gate-model is limited to tiny grids here because
 a statevector simulator costs 2^(qubits).
 
+### When the solvers disagree (divergence case)
+
+`quantum_gate.py` plots the **actual path/speed each solver picked**, with metrics
+(optimality gap, feasibility, success rate over repeated runs, time). Most of the
+time every solver finds the optimum — but on a harder instance they **diverge**.
+This reproducible run (`--qseed 11`) is the clearest example:
+
+```bash
+py quantum_gate.py --problem route --rows 3 --cols 4 --storms 1 --seed 2 \
+                   --reps 2 --maxiter 100 --qseed 11 --trials 1
+```
+
+| Solver | Path (row per stage) | Fuel | Gap | Feasible |
+|--------|----------------------|-----:|----:|:--------:|
+| Exact (NumPy) | `[1, 2, 2, 1]` | 61.7 t | — | ✓ |
+| **neal** (annealing) | `[1, 2, 2, 1]` | 61.7 t | **+0.0%** | ✓ |
+| QAOA (gate-model) | `[1, 1, 0, 1]` | 70.0 t | +13.5% | ✓ |
+| VQE (gate-model) | `[1, 0, 0, 1]` | 70.0 t | +13.5% | ✓ |
+
+![Solver divergence](outputs/compare_route_3x4_s1_seed2_q11_single.png)
+
+*Exact (green) and the annealer (blue) detour **north** into calm water — the
+optimum. QAOA (orange) and VQE (red) get trapped in a worse minimum and dip
+**south through the storm core** (dark red), burning ~14% more fuel. Same QUBO,
+same data — only the solver differs. This is exactly why solver choice matters,
+and why the annealer is the production pick (see the feasibility study below).*
+
+Compare with the *converged* runs (5 trials, default settings) where the best-of-N
+solutions agree: `outputs/compare_speed_L8_q42_t5.png` and
+`outputs/compare_route_3x4_s1_seed2_q42_t5.png` — there the markers stack on top of
+each other at the optimum, and the difference shows up only in the **success-rate**
+column (neal 5/5; QAOA/VQE lower).
+
 ---
 
 ## Feasibility study — which solver to use, and why

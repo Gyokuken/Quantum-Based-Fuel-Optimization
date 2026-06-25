@@ -48,6 +48,7 @@ from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 from qiskit_aer import AerSimulator
 from qiskit_algorithms import QAOA, SamplingVQE, NumPyMinimumEigensolver
 from qiskit_algorithms.optimizers import COBYLA
+from qiskit_algorithms.utils import algorithm_globals
 from qiskit_optimization import QuadraticProgram
 from qiskit_optimization.algorithms import MinimumEigenOptimizer
 
@@ -81,9 +82,11 @@ def qubo_to_qp(qubo, name="fuel_qubo"):
 # --------------------------------------------------------------------------- #
 # Solvers (each returns a {varname: 0/1} dict so decode() is uniform)          #
 # --------------------------------------------------------------------------- #
-def _pm_sampler():
+def _pm_sampler(seed=None):
+    # Seeding the sampler (shot RNG) + algorithm_globals (COBYLA start point)
+    # makes each gate-model run fully reproducible, independent of call order.
     return (generate_preset_pass_manager(optimization_level=1, backend=AerSimulator()),
-            StatevectorSampler())
+            StatevectorSampler(seed=seed))
 
 
 def run_exact(qp):
@@ -91,21 +94,23 @@ def run_exact(qp):
     return res.variables_dict
 
 
-def run_neal(qubo):
+def run_neal(qubo, seed=42):
     sampler, _, _ = backends.make_sampler("neal")
-    ss = backends.sample_qubo(sampler, "neal", qubo, num_reads=200)
+    ss = backends.sample_qubo(sampler, "neal", qubo, num_reads=200, seed=seed)
     return {k: int(v) for k, v in dict(ss.first.sample).items()}
 
 
-def run_qaoa(qp, reps, maxiter):
-    pm, sampler = _pm_sampler()
+def run_qaoa(qp, reps, maxiter, seed=42):
+    algorithm_globals.random_seed = seed
+    pm, sampler = _pm_sampler(seed)
     qaoa = QAOA(sampler=sampler, optimizer=COBYLA(maxiter=maxiter),
                 reps=reps, transpiler=pm)
     return MinimumEigenOptimizer(qaoa).solve(qp).variables_dict
 
 
-def run_vqe(qp, n_qubits, reps, maxiter):
-    pm, sampler = _pm_sampler()
+def run_vqe(qp, n_qubits, reps, maxiter, seed=42):
+    algorithm_globals.random_seed = seed
+    pm, sampler = _pm_sampler(seed)
     ansatz = pm.run(TwoLocal(n_qubits, "ry", "cz", reps=reps, entanglement="linear"))
     vqe = SamplingVQE(sampler=sampler, ansatz=ansatz, optimizer=COBYLA(maxiter=maxiter))
     return MinimumEigenOptimizer(vqe).solve(qp).variables_dict
@@ -121,10 +126,10 @@ def evaluate(label, run_once, decode, exact_fuel, trials):
     fuels = []
     best_fuel = float("inf")
     best_sol = None
-    best_str = "—"
+    best_str = "-"
     t0 = time.perf_counter()
-    for _ in range(trials):
-        sol, fuel, s = decode(run_once())
+    for i in range(trials):
+        sol, fuel, s = decode(run_once(i))
         if sol is not None and fuel == fuel:          # feasible & not NaN
             feasible += 1
             fuels.append(fuel)
@@ -266,9 +271,12 @@ def plot_route_comparison(ctx, records, meta, out):
         if r["best_sol"] is None:
             continue
         color, marker, _ = _style_for(r["label"])
+        gap_txt = ("" if r["label"].startswith("Exact")
+                   else f", +{r['gap']:.0f}%" if r["gap"] == r["gap"] and r["gap"] > 0.05
+                   else ", optimal")
         ax.plot(cols, [p + offset for p in r["best_sol"]], marker=marker,
                 color=color, lw=2.2, ms=8, mec="black", mew=0.5, alpha=0.95,
-                label=f"{r['label']} ({r['best_fuel']:.1f} t)")
+                label=f"{r['label']} ({r['best_fuel']:.1f} t{gap_txt})")
         offset += 0.08
 
     ax.scatter([0, n_cols - 1], [ctx["start_row"], ctx["end_row"]], s=240,
@@ -308,7 +316,12 @@ def main() -> None:
     # effort
     p.add_argument("--reps", type=int, default=3)
     p.add_argument("--maxiter", type=int, default=200)
+    p.add_argument("--qseed", type=int, default=42,
+                   help="seed for QAOA/VQE reproducibility (deterministic runs)")
     args = p.parse_args()
+
+    # Make the gate-model runs reproducible so a divergence is stable for slides.
+    algorithm_globals.random_seed = args.qseed
 
     if args.problem == "speed":
         qubo, decode, meta, ctx = build_speed_problem(args)
@@ -328,20 +341,24 @@ def main() -> None:
     qp = qubo_to_qp(qubo)
 
     # Exact reference first (so we can score gaps + success) ----------------- #
-    exact_rec = evaluate("Exact (NumPy)", lambda: run_exact(qp), decode,
+    exact_rec = evaluate("Exact (NumPy)", lambda i: run_exact(qp), decode,
                          float("nan"), trials=1)
     exact_fuel = exact_rec["best_fuel"]
     exact_rec["gap"] = 0.0
     exact_rec["successes"] = exact_rec["trials"] = 1
 
+    # Each trial gets its own seed (qseed + i) so multi-trial stats vary and a
+    # single trial (i=0) is exactly reproducible at qseed.
     records = [exact_rec]
-    records.append(evaluate("neal (anneal)", lambda: run_neal(qubo), decode,
-                            exact_fuel, args.trials))
-    records.append(evaluate("QAOA", lambda: run_qaoa(qp, args.reps, args.maxiter),
+    records.append(evaluate("neal (anneal)", lambda i: run_neal(qubo, seed=42 + i),
                             decode, exact_fuel, args.trials))
-    records.append(evaluate("VQE", lambda: run_vqe(qp, n, max(1, args.reps - 1),
-                                                   args.maxiter + 100),
-                            decode, exact_fuel, args.trials))
+    records.append(evaluate(
+        "QAOA", lambda i: run_qaoa(qp, args.reps, args.maxiter, seed=args.qseed + i),
+        decode, exact_fuel, args.trials))
+    records.append(evaluate(
+        "VQE", lambda i: run_vqe(qp, n, max(1, args.reps - 1), args.maxiter + 100,
+                                 seed=args.qseed + i),
+        decode, exact_fuel, args.trials))
 
     # --- Metrics table ----------------------------------------------------- #
     print("  COMPARISON METRICS")
@@ -363,12 +380,15 @@ def main() -> None:
 
     # --- Comparison plot --------------------------------------------------- #
     config.OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    tag = f"_q{args.qseed}" + ("_single" if args.trials == 1 else f"_t{args.trials}")
+    if args.trials == 1:
+        meta["title"] += f"  (single reproducible run, qseed={args.qseed})"
     if meta["kind"] == "speed":
-        out = config.OUTPUTS_DIR / f"compare_speed_L{args.levels}.png"
+        out = config.OUTPUTS_DIR / f"compare_speed_L{args.levels}{tag}.png"
         plot_speed_comparison(ctx, records, meta, out)
     else:
         out = config.OUTPUTS_DIR / (f"compare_route_{args.rows}x{args.cols}"
-                                    f"_s{args.storms}_seed{args.seed}.png")
+                                    f"_s{args.storms}_seed{args.seed}{tag}.png")
         plot_route_comparison(ctx, records, meta, out)
     print(f"\n  Saved comparison plot -> {out}")
     print("\n  Takeaway: same QUBO, three solvers. neal (annealing) is fast and "
