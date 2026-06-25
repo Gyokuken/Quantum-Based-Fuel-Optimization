@@ -39,10 +39,10 @@ import argparse
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import neal
 import numpy as np
 from pyqubo import Binary
 
+import backends
 import config
 import optimizer
 
@@ -76,10 +76,11 @@ def build_speed_qubo(pipe, scenario, distance_nm, deadline_hours, n_levels=40):
     return qubo, speeds, fuels, feasible, info
 
 
-def solve_speed_qubo(qubo, speeds, fuels, num_reads=200, seed=42):
-    """Solve the QUBO with neal; decode the one-hot result back to a speed."""
-    sampler = neal.SimulatedAnnealingSampler()
-    sampleset = sampler.sample_qubo(qubo, num_reads=num_reads, seed=seed)
+def solve_speed_qubo(qubo, speeds, fuels, num_reads=200, seed=42, backend="neal"):
+    """Solve the QUBO on the chosen backend; decode the one-hot result to a speed."""
+    sampler, label, is_quantum = backends.make_sampler(backend)
+    sampleset = backends.sample_qubo(sampler, backend, qubo,
+                                     num_reads=num_reads, seed=seed)
     best = sampleset.first.sample
 
     selected = [i for i in range(len(speeds)) if best.get(f"x_{i}", 0) == 1]
@@ -94,6 +95,8 @@ def solve_speed_qubo(qubo, speeds, fuels, num_reads=200, seed=42):
         "fuel": float(fuels[i]),
         "n_selected": len(selected),
         "valid_one_hot": valid_one_hot,
+        "backend_label": label,
+        "run_note": backends.describe_run(sampleset, backend),
     }
 
 
@@ -102,6 +105,12 @@ def main() -> None:
     p.add_argument("--distance", type=float, default=config.DEFAULT_VOYAGE_NM)
     p.add_argument("--deadline", type=float, default=config.DEFAULT_DEADLINE_HOURS)
     p.add_argument("--levels", type=int, default=40, help="speed discretization")
+    p.add_argument("--backend", default="neal",
+                   choices=["neal", "dwave", "tabu"],
+                   help="who solves the QUBO: neal (classical, default), "
+                        "dwave (REAL quantum annealer), tabu (classical)")
+    p.add_argument("--num-reads", type=int, default=200,
+                   help="number of samples/anneals")
     args = p.parse_args()
 
     scenario = dict(config.DEFAULT_SCENARIO)
@@ -111,7 +120,8 @@ def main() -> None:
     qubo, speeds, fuels, feasible, info = build_speed_qubo(
         pipe, scenario, args.distance, args.deadline, args.levels
     )
-    qres = solve_speed_qubo(qubo, speeds, fuels)
+    qres = solve_speed_qubo(qubo, speeds, fuels,
+                            num_reads=args.num_reads, backend=args.backend)
 
     # --- Reference answers from Phase 1 (SA + brute-force grid) ------------ #
     ref = optimizer.optimize_speed(pipe, scenario, args.distance, args.deadline)
@@ -122,9 +132,12 @@ def main() -> None:
     print(f"  QUBO size: {info['n_vars']} binary vars, "
           f"{info['n_qubo_terms']} quadratic terms, penalty {info['penalty']:.0f}")
     print(f"  Speed resolution: {(speeds[1] - speeds[0]):.2f} kn between levels")
+    print(f"  Solver: {qres['backend_label']}")
+    if qres['run_note']:
+        print(qres['run_note'])
     print()
     print(f"  {'Method':<22}{'speed (kn)':>12}{'fuel (t)':>12}")
-    print(f"  {'QUBO (neal)':<22}{qres['speed']:>12.2f}{qres['fuel']:>12.2f}")
+    print(f"  {'QUBO':<22}{qres['speed']:>12.2f}{qres['fuel']:>12.2f}")
     print(f"  {'Simulated annealing':<22}{ref['opt_speed']:>12.2f}{ref['opt_fuel']:>12.2f}")
     print(f"  {'Brute-force grid':<22}{ref['grid_speed']:>12.2f}{ref['grid_fuel']:>12.2f}")
     print()
