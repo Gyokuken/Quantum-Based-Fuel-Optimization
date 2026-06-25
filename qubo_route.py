@@ -42,10 +42,10 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import neal
 import numpy as np
 from pyqubo import Binary
 
+import backends
 import config
 import optimizer
 
@@ -257,10 +257,14 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=0, help="random storm seed")
     p.add_argument("--ship-type", default=config.DEFAULT_SCENARIO["ship_type"],
                    choices=list(config.SHIP_SPECS.keys()))
+    p.add_argument("--backend", default="neal",
+                   choices=["neal", "dwave", "tabu"],
+                   help="who solves the QUBO: neal (classical, default), "
+                        "dwave (REAL quantum annealer), tabu (classical)")
     p.add_argument("--num-reads", type=int, default=None,
-                   help="neal samples (default scales with grid size)")
+                   help="number of samples/anneals (default scales with grid)")
     p.add_argument("--sweeps", type=int, default=1000,
-                   help="neal annealing sweeps per read (more = better quality)")
+                   help="neal annealing sweeps per read (ignored by dwave/tabu)")
     p.add_argument("--start-row", type=int, default=None,
                    help="start port latitude band (default: middle)")
     p.add_argument("--end-row", type=int, default=None,
@@ -281,12 +285,19 @@ def main() -> None:
     cost = cell_costs(pipe, base, waves, args.distance, args.cruise)
 
     # --- QUBO (quantum-inspired) ------------------------------------------ #
+    # Same QUBO regardless of who solves it -- that is the whole point.
     qubo, info = build_route_qubo(cost, start_row, end_row)
-    num_reads = args.num_reads if args.num_reads else max(500, 150 * n_cols)
-    sampler = neal.SimulatedAnnealingSampler()
-    sampleset = sampler.sample_qubo(qubo, num_reads=num_reads,
-                                    num_sweeps=args.sweeps, seed=42)
+    sampler, backend_label, is_quantum = backends.make_sampler(args.backend)
+    if args.num_reads:
+        num_reads = args.num_reads
+    elif args.backend == "dwave":
+        num_reads = 1000                      # conserve the free QPU minute
+    else:
+        num_reads = max(500, 150 * n_cols)
+    sampleset = backends.sample_qubo(sampler, args.backend, qubo,
+                                     num_reads=num_reads, sweeps=args.sweeps)
     qubo_path = decode_route(sampleset.first.sample, n_rows, n_cols)
+    run_note = backends.describe_run(sampleset, args.backend)
 
     # --- Validation (exact DP) + naive baseline --------------------------- #
     dp_path, dp_fuel = exact_best_dp(cost, start_row, end_row)
@@ -300,7 +311,10 @@ def main() -> None:
           f"{args.distance:.0f} nm  |  storms: "
           f"{args.storms if args.storms else '1 (centred)'} (seed {args.seed})")
     print(f"  Grid: {n_rows} rows x {n_cols} cols  ({info['n_vars']} binary vars, "
-          f"{info['n_qubo_terms']} QUBO terms, {num_reads} neal reads)")
+          f"{info['n_qubo_terms']} QUBO terms, {num_reads} reads)")
+    print(f"  Solver: {backend_label}")
+    if run_note:
+        print(run_note)
     print(f"  Sea state: waves {waves.min():.1f}-{waves.max():.1f} m\n")
 
     if qubo_path is None:

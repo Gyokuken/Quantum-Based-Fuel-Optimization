@@ -8,11 +8,18 @@ matplotlib
 # Phase 2 (quantum-inspired QUBO optimizers) -- installed and in use
 pyqubo
 dwave-neal
+dwave-system        # real D-Wave annealer + Tabu backend (backends.py)
+
+# Phase 2c (gate-model quantum: QAOA + VQE on the SAME QUBO) -- quantum_gate.py
+qiskit
+qiskit-aer          # local statevector simulator (free, offline)
+qiskit-algorithms   # QAOA, SamplingVQE, NumPyMinimumEigensolver
+qiskit-optimization # QUBO -> Ising Hamiltonian conversion
 
 # Phase 2 optional extras -- not required yet
 # xgboost
 # lightgbm
-# deap
+# deap                # for a genetic-algorithm backend comparison
 
 # Phase 3 (dashboard) -- not required yet
 # streamlit

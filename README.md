@@ -62,6 +62,8 @@ py optimizer.py --distance 600 --deadline 80 --waves 4 --wind 30
 | `demo.py` | One-command end-to-end demonstration | §12 |
 | `qubo_speed.py` | **Phase 2a:** speed optimization as a QUBO (pyqubo + neal) | §7 |
 | `qubo_route.py` | **Phase 2b:** weather routing as a QUBO (the headline) | §7 |
+| `backends.py` | Solver swap point: `neal` / `dwave` (real QPU) / `tabu` | §7 |
+| `quantum_gate.py` | **Phase 2c:** the same QUBO on gate-model **QAOA + VQE** (Qiskit) | §7 |
 
 Ship classes modeled (ICG-style patrol fleet): **Interceptor**, **Fast Patrol**,
 **Offshore Patrol Vessel**. Generated at runtime: `data/`, `models/`, `outputs/`.
@@ -129,6 +131,110 @@ ML model**. The QUBO picks the minimum-fuel path *around* the storm:
 (black) plows straight through it. A centred storm has two equal optima
 (north/south) — the QUBO found one, brute force the other, both 52.7 t.*
 
+### Swappable solver backends (`backends.py`)
+
+The same QUBO can be handed to different solvers with `--backend`:
+
+| Backend | What it is | Needs |
+|---------|-----------|-------|
+| `neal` (default) | Classical simulated annealing | nothing — offline |
+| `tabu` | Classical Tabu search | nothing — offline |
+| `dwave` | **Real D-Wave quantum annealer** via Leap | a Leap API token |
+
+```bash
+py qubo_route.py --rows 5 --cols 7 --backend tabu
+py qubo_route.py --rows 5 --cols 7 --backend dwave   # needs a Leap token
+```
+
+> **Note on `dwave`:** D-Wave's free *Trial* plan now allows demos only — it no
+> longer issues API tokens for submitting your own problems. Running our QUBO on a
+> real annealer needs a paid/commercial or academic Leap plan. The code path is
+> ready; it's a one-flag switch if/when access is granted.
+
+### Phase 2c — the same QUBO on gate-model quantum (QAOA + VQE)
+
+`quantum_gate.py` proves the QUBO is portable to **gate-model** quantum computers
+(IBM-style), not just annealers. It converts the QUBO → an Ising Hamiltonian and
+solves it with **QAOA** and **VQE** on Qiskit's free local simulator (the same
+code runs on real IBM hardware via the free Open plan).
+
+```bash
+py quantum_gate.py --problem speed --levels 8          # 8 qubits
+py quantum_gate.py --problem route --rows 3 --cols 4 --storms 1 --seed 2
+```
+
+| Problem | Qubits | QAOA | VQE | vs exact |
+|---------|-------:|------|-----|----------|
+| Speed (8 levels) | 8 | 16.0 kn ✓ | 16.0 kn ✓ | **both match exactly** |
+| Route (3×4, 1 storm) | 12 | approx | within ~6% | heuristic, needs depth |
+
+**Honest finding:** QAOA/VQE nail the small *unconstrained-ish* speed QUBO, but on
+the penalty-heavy *route* QUBO (one-hot + connectivity + endpoint constraints) the
+shallow variational circuits are only approximate. Annealing (neal/D-Wave) handles
+these constrained QUBOs more naturally — a nice illustration that different quantum
+paradigms suit different problems. Gate-model is limited to tiny grids here because
+a statevector simulator costs 2^(qubits).
+
+---
+
+## Feasibility study — which solver to use, and why
+
+We have **six** ways to solve the optimization, spanning exact / classical /
+quantum. They are *not* interchangeable — each wins in a different regime. The
+choice is driven by four questions: **how big is the problem, how hard are the
+constraints, how reliable must the answer be, and what hardware can we access.**
+
+### Measured head-to-head (`quantum_gate.py`, 5 trials each, same QUBO)
+
+| Solver | Paradigm | Best fuel | Success rate | Time/run | Practical size ceiling |
+|--------|----------|----------:|:------------:|---------:|------------------------|
+| **neal** | Classical annealing (SA) | optimum | **5/5** speed, **5/5** route | **~0.05 s** | hundreds of vars (we run 275) |
+| Tabu | Classical metaheuristic | optimum | reliable | ~0.1 s | hundreds of vars |
+| QAOA | Gate-model quantum | optimum | 4/5 speed, **2/5** route | ~3–9 s | ~16 qubits on a laptop sim |
+| VQE | Gate-model quantum | optimum | 4/5 speed, **3/5** route | ~6–30 s | ~16 qubits on a laptop sim |
+| NumPy eigensolver | Exact (brute force) | optimum | 1/1 | <0.05 s | ≤ ~18 vars (2ⁿ blow-up) |
+| Exact DP | Exact (grid structure) | optimum | 1/1 | instant | any grid (route only) |
+
+*Success rate = fraction of repeated runs that hit the exact optimum.* All solvers
+*can* reach the optimum (best-of-N gap ≈ 0%); they differ in **reliability** and
+**speed** — and that gap widens on the constraint-heavy route QUBO.
+
+### Decision guide
+
+| If you need… | Use | Why |
+|--------------|-----|-----|
+| The **production answer** at our real grid sizes (35–275 vars) | **neal** | fast, 100% reliable here, scales to hundreds of variables |
+| To **validate** that the optimizer is correct | Exact **DP** (route) / **NumPy** (speed) | provably optimal reference |
+| A classical **second opinion** | Tabu | different heuristic, zero setup, offline |
+| To **demonstrate quantum portability** (gate-model) | QAOA / VQE on a *small* instance | the same QUBO runs on IBM-style hardware |
+| Real **quantum annealing at scale** | D-Wave Advantage (`--backend dwave`) | 5000+ qubits can embed our 275-var QUBO — *needs paid/academic Leap access* |
+
+### Scaling feasibility (why size decides the quantum question)
+
+- **Our problem scale:** 5×7 = 35 binary vars; 11×25 = **275** binary vars.
+- **Gate-model (QAOA/VQE):** one qubit per variable. On a laptop simulator the
+  cost is 2ⁿ, so ~16–18 qubits is the ceiling. Real gate QPUs exist (IBM ~127+
+  qubits) but are **noisy**, and deep QAOA on 275 *constrained* variables is **not
+  feasible today**. Gate-model here is a *small-scale proof of portability*, not a
+  production solver.
+- **Quantum annealing (D-Wave):** Advantage has **5000+ qubits** with sparse
+  connectivity; minor-embedding a 275-variable QUBO is feasible. So at our scale,
+  **annealing is the only quantum route that is feasible today** — which is exactly
+  why we formulated everything as a QUBO/Ising.
+- **Classical annealing (neal):** solves 275 vars in well under a second at 100%
+  reliability in our tests — **the practical choice right now**.
+
+### Verdict
+
+> **Today:** ship with **neal** (classical annealing on the QUBO); validate against
+> **exact DP**. neal is the fastest *and* most reliable on these constrained fuel
+> QUBOs. **Quantum is kept ready, not relied upon:** the identical QUBO runs on a
+> real D-Wave annealer (one flag) if academic access is granted, and on gate-model
+> QAOA/VQE for small instances. **As gate-model hardware matures** (more qubits,
+> lower noise, error correction), QAOA/VQE become candidates for larger instances —
+> and because the problem is already a QUBO, **no re-modelling is needed** to adopt
+> them. That portability is the core design decision of this project.
+
 ---
 
 ## The story for the demo (30 seconds)
@@ -146,4 +252,20 @@ plausible but not calibrated to a specific vessel; data is synthetic; the QUBO i
 solved on a *classical* annealer (`neal`), not real quantum hardware — but the
 formulation is hardware-portable.
 
-STILL IN PROGRESS
+---
+
+## Roadmap
+
+- **Phase 1 — DONE:** synthetic ship data → fuel-rate model (R² ≈ 0.99) →
+  slow-steaming SA optimizer with deadline + CO₂, one-command demo + plot.
+- **Phase 2 — DONE:** genuine **QUBO** optimizers (PyQUBO + dwave-neal) for both
+  speed (2a) and **weather routing** (2b), validated against brute force. The same
+  QUBOs are portable to real D-Wave quantum hardware.
+- **Phase 3 — Dashboard:** Streamlit UI — pick ship + conditions + voyage,
+  see predicted fuel, click "Optimize", get the recommended speed/route + savings.
+
+### Possible Phase 2+ extensions
+- Multi-segment speed profile (a speed per leg under a total-time deadline).
+- Joint speed **and** route optimization in one QUBO.
+- Genetic-algorithm optimizer for a three-way comparison (SA vs GA vs QUBO).
+- Retrain the model on a real public dataset (e.g. FuelCast) to show transfer.

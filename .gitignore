@@ -1,0 +1,10 @@
+# Node (only used to build the .pptx via pptxgenjs)
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Claude Code local session files
+.claude/
