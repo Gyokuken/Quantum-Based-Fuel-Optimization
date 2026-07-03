@@ -62,8 +62,10 @@ py optimizer.py --distance 600 --deadline 80 --waves 4 --wind 30
 | `demo.py` | One-command end-to-end demonstration | §12 |
 | `qubo_speed.py` | **Phase 2a:** speed optimization as a QUBO (pyqubo + neal) | §7 |
 | `qubo_route.py` | **Phase 2b:** weather routing as a QUBO (the headline) | §7 |
-| `backends.py` | Solver swap point: `neal` / `dwave` (real QPU) / `tabu` | §7 |
+| `backends.py` | Solver swap point: `neal` / `dwave` (real QPU) / `tabu` / `gsa` | §7 |
 | `quantum_gate.py` | **Phase 2c:** the same QUBO on gate-model **QAOA + VQE** (Qiskit) | §7 |
+| `gsa.py` | **Phase 2d:** Gravitational Search Algorithm (continuous + binary) | §7 |
+| `gsa_speed.py` | **Phase 2d:** GSA vs SA vs grid on cruise speed (+ convergence plot) | §7 |
 
 Ship classes modeled (ICG-style patrol fleet): **Interceptor**, **Fast Patrol**,
 **Offshore Patrol Vessel**. Generated at runtime: `data/`, `models/`, `outputs/`.
@@ -210,6 +212,61 @@ column (neal 5/5; QAOA/VQE lower).
 
 ---
 
+## Phase 2d — a different optimizer family: Gravitational Search (GSA)
+
+Every solver above is either *annealing* (SA/neal/D-Wave) or *gate-model*
+(QAOA/VQE). **GSA** (Rashedi et al., 2009) is a third family — a **swarm
+metaheuristic** where each candidate solution is a "mass" and better solutions
+gravitationally attract the swarm (`F = G·M_i·M_j / R`). The gravitational
+constant `G` shrinks over time, giving the same explore→exploit arc SA gets from
+cooling. We added it in two forms:
+
+- **Continuous GSA** (`gsa.gsa_minimize`) — GSA's natural domain, used on the
+  **cruise-speed** problem (`gsa_speed.py`).
+- **Binary GSA / BGSA** (`gsa.bgsa_qubo`, Rashedi 2010) — maps GSA to 0/1 space via
+  a `|tanh(v)|` transfer function, so it solves the **QUBO** as a `--backend gsa`.
+
+**Speed (continuous, GSA's home turf):** `py gsa_speed.py`
+
+| Method | Speed (40 h) | Fuel | Speed (90 h) | Fuel |
+|--------|-------------:|-----:|-------------:|-----:|
+| **GSA** | 15.03 kn | 39.90 t | 8.40 kn | 18.27 t |
+| Simulated annealing | 15.03 kn | 39.90 t | 8.40 kn | 18.27 t |
+| Grid (exact) | 15.02 kn | 39.92 t | 8.39 kn | 18.29 t |
+
+GSA **matches SA and the exact grid** on speed. The convergence plot
+(`outputs/gsa_speed_*.png`) shows the swarm's mean fuel starting scattered (a
+spike to ~85 t) then collapsing onto the optimum by ~iteration 20 as "gravity"
+pulls the agents together.
+
+**QUBO (binary), added to the 5-way comparison** (`quantum_gate.py` now runs GSA too):
+
+| Solver | Speed QUBO (8 var) | Route 3×4 (12 var) | Route 5×7 (35 var) |
+|--------|:------------------:|:------------------:|:------------------:|
+| neal | 5/5, 0.06 s | 5/5, 0.05 s | optimum, <0.1 s |
+| **GSA** | **5/5, 0.33 s** | **5/5, 0.34 s** | **~11% gap, invalid paths** |
+| QAOA | 3/5, 2.9 s | 0/5 (best +4.9%) | — |
+| VQE | 4/5, 5.9 s | 1/5, 20 s | — |
+
+**Honest finding — GSA scales badly on constrained QUBOs.** On *small* QUBOs
+(8–12 variables) GSA is excellent: reliable (5/5) and faster than QAOA/VQE. But as
+the route grid grows to 35 variables the penalty-heavy landscape defeats it —
+~11% gap and frequent invalid paths, because BGSA is a generic bit-flipper with no
+constraint-awareness. **neal (annealing) stays reliable at every size**, which is
+why it remains the production choice.
+
+In the divergence diagram above, GSA (purple) sides with neal on the **correct**
+northern detour, while QAOA/VQE go the wrong way — a nice visual that the two
+*classical* metaheuristics agree while the shallow gate-model circuits don't.
+
+> **GSA vs QGSA?** We implemented **canonical GSA** first because it has one
+> agreed definition (Rashedi 2009) and is the baseline any "quantum-inspired GSA"
+> must beat. *Quantum GSA (QGSA)* is a classical algorithmic twist (quantum-inspired
+> position updates), not real quantum hardware — a sensible *next* experiment once
+> the GSA baseline is in place, but not a new hardware story like D-Wave/QAOA.
+
+---
+
 ## Feasibility study — which solver to use, and why
 
 We have **six** ways to solve the optimization, spanning exact / classical /
@@ -223,8 +280,9 @@ constraints, how reliable must the answer be, and what hardware can we access.**
 |--------|----------|----------:|:------------:|---------:|------------------------|
 | **neal** | Classical annealing (SA) | optimum | **5/5** speed, **5/5** route | **~0.05 s** | hundreds of vars (we run 275) |
 | Tabu | Classical metaheuristic | optimum | reliable | ~0.1 s | hundreds of vars |
-| QAOA | Gate-model quantum | optimum | 4/5 speed, **2/5** route | ~3–9 s | ~16 qubits on a laptop sim |
-| VQE | Gate-model quantum | optimum | 4/5 speed, **3/5** route | ~6–30 s | ~16 qubits on a laptop sim |
+| GSA | Classical swarm (gravity) | optimum | 5/5 speed, 5/5 small route | ~0.3 s | small QUBOs only (fails ≥35 vars) |
+| QAOA | Gate-model quantum | optimum | 3/5 speed, **0–2/5** route | ~3–9 s | ~16 qubits on a laptop sim |
+| VQE | Gate-model quantum | optimum | 4/5 speed, **1/5** route | ~6–30 s | ~16 qubits on a laptop sim |
 | NumPy eigensolver | Exact (brute force) | optimum | 1/1 | <0.05 s | ≤ ~18 vars (2ⁿ blow-up) |
 | Exact DP | Exact (grid structure) | optimum | 1/1 | instant | any grid (route only) |
 
@@ -238,7 +296,8 @@ constraints, how reliable must the answer be, and what hardware can we access.**
 |--------------|-----|-----|
 | The **production answer** at our real grid sizes (35–275 vars) | **neal** | fast, 100% reliable here, scales to hundreds of variables |
 | To **validate** that the optimizer is correct | Exact **DP** (route) / **NumPy** (speed) | provably optimal reference |
-| A classical **second opinion** | Tabu | different heuristic, zero setup, offline |
+| A classical **second opinion** | Tabu / GSA | different heuristics; GSA is also the native choice for the *continuous* speed problem |
+| To optimize a **continuous** variable directly (speed) | **GSA** or SA | no discretization needed; GSA matches SA/grid on speed |
 | To **demonstrate quantum portability** (gate-model) | QAOA / VQE on a *small* instance | the same QUBO runs on IBM-style hardware |
 | Real **quantum annealing at scale** | D-Wave Advantage (`--backend dwave`) | 5000+ qubits can embed our 275-var QUBO — *needs paid/academic Leap access* |
 

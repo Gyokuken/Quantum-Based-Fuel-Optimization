@@ -48,8 +48,12 @@ def make_sampler(backend: str):
         from dwave.samplers import TabuSampler
         return TabuSampler(), "Tabu search (classical metaheuristic)", False
 
+    if backend == "gsa":
+        import gsa
+        return gsa.GSASampler(), "Binary GSA (gravitational search metaheuristic)", False
+
     raise ValueError(f"Unknown backend '{backend}'. "
-                     f"Choose from: neal, dwave, tabu.")
+                     f"Choose from: neal, dwave, tabu, gsa.")
 
 
 def sample_qubo(sampler, backend: str, qubo, num_reads: int,
@@ -70,6 +74,8 @@ def sample_qubo(sampler, backend: str, qubo, num_reads: int,
         return sampler.sample_qubo(qubo, num_reads=num_reads)
     if backend == "tabu":
         return sampler.sample_qubo(qubo, num_reads=num_reads)
+    if backend == "gsa":
+        return sampler.sample_qubo(qubo, num_reads=num_reads, seed=seed)
 
     raise ValueError(f"Unknown backend '{backend}'.")
 

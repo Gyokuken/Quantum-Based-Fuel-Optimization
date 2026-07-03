@@ -258,9 +258,10 @@ def main() -> None:
     p.add_argument("--ship-type", default=config.DEFAULT_SCENARIO["ship_type"],
                    choices=list(config.SHIP_SPECS.keys()))
     p.add_argument("--backend", default="neal",
-                   choices=["neal", "dwave", "tabu"],
+                   choices=["neal", "dwave", "tabu", "gsa"],
                    help="who solves the QUBO: neal (classical, default), "
-                        "dwave (REAL quantum annealer), tabu (classical)")
+                        "dwave (REAL quantum annealer), tabu (classical), "
+                        "gsa (gravitational search metaheuristic)")
     p.add_argument("--num-reads", type=int, default=None,
                    help="number of samples/anneals (default scales with grid)")
     p.add_argument("--sweeps", type=int, default=1000,
@@ -292,6 +293,8 @@ def main() -> None:
         num_reads = args.num_reads
     elif args.backend == "dwave":
         num_reads = 1000                      # conserve the free QPU minute
+    elif args.backend == "gsa":
+        num_reads = 12                        # GSA restarts (each is a full swarm)
     else:
         num_reads = max(500, 150 * n_cols)
     sampleset = backends.sample_qubo(sampler, args.backend, qubo,
@@ -317,15 +320,16 @@ def main() -> None:
         print(run_note)
     print(f"  Sea state: waves {waves.min():.1f}-{waves.max():.1f} m\n")
 
+    solver_tag = f"QUBO ({args.backend})"
     if qubo_path is None:
         print("  QUBO returned an INVALID path (penalty/reads too low).")
-        qubo_fuel, qubo_path, label = float("nan"), naive_path, "QUBO (invalid)"
+        qubo_fuel, qubo_path, label = float("nan"), naive_path, f"{solver_tag} (invalid)"
     else:
-        qubo_fuel, label = path_fuel(qubo_path, cost), "QUBO route (neal)"
+        qubo_fuel, label = path_fuel(qubo_path, cost), f"QUBO route ({args.backend})"
 
     print(f"  {'Method':<24}{'fuel (t)':>10}   path (rows by stage)")
     print(f"  {'Naive straight':<24}{naive_fuel:>10.2f}   {naive_path}")
-    print(f"  {'QUBO (neal)':<24}{qubo_fuel:>10.2f}   {qubo_path}")
+    print(f"  {solver_tag:<24}{qubo_fuel:>10.2f}   {qubo_path}")
     print(f"  {'Exact optimum (DP)':<24}{dp_fuel:>10.2f}   {dp_path}")
     print()
     saving = (naive_fuel - qubo_fuel) / naive_fuel * 100

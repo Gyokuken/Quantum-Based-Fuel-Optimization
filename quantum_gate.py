@@ -54,6 +54,7 @@ from qiskit_optimization.algorithms import MinimumEigenOptimizer
 
 import backends
 import config
+import gsa
 import optimizer
 import qubo_route
 import qubo_speed
@@ -98,6 +99,12 @@ def run_neal(qubo, seed=42):
     sampler, _, _ = backends.make_sampler("neal")
     ss = backends.sample_qubo(sampler, "neal", qubo, num_reads=200, seed=seed)
     return {k: int(v) for k, v in dict(ss.first.sample).items()}
+
+
+def run_gsa(qubo, seed=0):
+    """Binary Gravitational Search Algorithm on the QUBO (classical metaheuristic)."""
+    sample, _e, _h = gsa.bgsa_qubo(qubo, n_agents=80, iters=200, seed=seed)
+    return sample
 
 
 def run_qaoa(qp, reps, maxiter, seed=42):
@@ -213,6 +220,7 @@ def build_route_problem(args):
 STYLE = {                       # consistent colours/markers per solver
     "Exact":  ("#16A34A", "*", 22),
     "neal":   ("#1f77b4", "o", 12),
+    "GSA":    ("#7C3AED", "v", 11),
     "QAOA":   ("#E8772E", "D", 11),
     "VQE":    ("#D62728", "s", 10),
 }
@@ -351,6 +359,8 @@ def main() -> None:
     # single trial (i=0) is exactly reproducible at qseed.
     records = [exact_rec]
     records.append(evaluate("neal (anneal)", lambda i: run_neal(qubo, seed=42 + i),
+                            decode, exact_fuel, args.trials))
+    records.append(evaluate("GSA (gravity)", lambda i: run_gsa(qubo, seed=args.qseed + i),
                             decode, exact_fuel, args.trials))
     records.append(evaluate(
         "QAOA", lambda i: run_qaoa(qp, args.reps, args.maxiter, seed=args.qseed + i),

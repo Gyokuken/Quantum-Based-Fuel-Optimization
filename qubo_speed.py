@@ -106,11 +106,12 @@ def main() -> None:
     p.add_argument("--deadline", type=float, default=config.DEFAULT_DEADLINE_HOURS)
     p.add_argument("--levels", type=int, default=40, help="speed discretization")
     p.add_argument("--backend", default="neal",
-                   choices=["neal", "dwave", "tabu"],
+                   choices=["neal", "dwave", "tabu", "gsa"],
                    help="who solves the QUBO: neal (classical, default), "
-                        "dwave (REAL quantum annealer), tabu (classical)")
+                        "dwave (REAL quantum annealer), tabu (classical), "
+                        "gsa (gravitational search)")
     p.add_argument("--num-reads", type=int, default=200,
-                   help="number of samples/anneals")
+                   help="number of samples/anneals (GSA: use ~8 restarts)")
     args = p.parse_args()
 
     scenario = dict(config.DEFAULT_SCENARIO)
@@ -120,8 +121,10 @@ def main() -> None:
     qubo, speeds, fuels, feasible, info = build_speed_qubo(
         pipe, scenario, args.distance, args.deadline, args.levels
     )
+    # GSA reads are full swarm restarts, so cap them (each is already thorough).
+    reads = min(args.num_reads, 10) if args.backend == "gsa" else args.num_reads
     qres = solve_speed_qubo(qubo, speeds, fuels,
-                            num_reads=args.num_reads, backend=args.backend)
+                            num_reads=reads, backend=args.backend)
 
     # --- Reference answers from Phase 1 (SA + brute-force grid) ------------ #
     ref = optimizer.optimize_speed(pipe, scenario, args.distance, args.deadline)
