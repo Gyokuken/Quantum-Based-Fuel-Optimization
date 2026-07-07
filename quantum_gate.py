@@ -101,10 +101,27 @@ def run_neal(qubo, seed=42):
     return {k: int(v) for k, v in dict(ss.first.sample).items()}
 
 
-def run_gsa(qubo, seed=0):
-    """Binary Gravitational Search Algorithm on the QUBO (classical metaheuristic)."""
-    sample, _e, _h = gsa.bgsa_qubo(qubo, n_agents=80, iters=200, seed=seed)
-    return sample
+def run_gsa(qubo, seed=0, n_agents=100, iters=400, restarts=20):
+    """Binary Gravitational Search Algorithm on the QUBO (classical metaheuristic).
+
+    Uses `restarts` independent swarms (keeping the best) so GSA gets a budget
+    comparable to neal's num_reads -- a FAIR fight. With one swarm only, GSA
+    looks far worse than it is on constrained QUBOs."""
+    samp = gsa.GSASampler(n_agents=n_agents, iters=iters)
+    ss = samp.sample_qubo(qubo, num_reads=restarts, seed=seed)
+    return {k: int(v) for k, v in dict(ss.first.sample).items()}
+
+
+def run_tabu(qubo, seed=0):
+    """Tabu search on the QUBO (classical metaheuristic)."""
+    sampler, _, _ = backends.make_sampler("tabu")
+    ss = backends.sample_qubo(sampler, "tabu", qubo, num_reads=200, seed=seed)
+    return {k: int(v) for k, v in dict(ss.first.sample).items()}
+
+
+def _path_to_vardict(path):
+    """Turn an exact-DP route path into a one-hot var_dict (for big-grid exact ref)."""
+    return {f"x_{c}_{r}": 1 for c, r in enumerate(path)}
 
 
 def run_qaoa(qp, reps, maxiter, seed=42):
@@ -194,20 +211,29 @@ def build_route_problem(args):
     waves = qubo_route.build_weather(args.rows, args.cols, storms)
     cost = qubo_route.cell_costs(pipe, base, waves, args.distance, args.cruise)
     start_row = end_row = args.rows // 2
-    qubo, info = qubo_route.build_route_qubo(cost, start_row, end_row)
+    qubo, info = qubo_route.build_route_qubo(
+        cost, start_row, end_row,
+        penalty_mult=getattr(args, "penalty_mult", 10.0))
 
     def decode(var_dict):
         sample = {k: int(round(v)) for k, v in var_dict.items()}
         path = qubo_route.decode_route(sample, args.rows, args.cols)
         if path is None:
             return None, float("nan"), "invalid path"
+        # Enforce the fixed start/end ports (decode_route only checks one-hot +
+        # no-teleport); a path ending at the wrong port is infeasible, not cheap.
+        if path[0] != start_row or path[-1] != end_row:
+            return None, float("nan"), "wrong start/end port"
         return path, qubo_route.path_fuel(path, cost), str(path)
 
     naive = [int(round(start_row + (end_row - start_row) * c / (args.cols - 1)))
              for c in range(args.cols)]
+    # Exact optimum via DP -- scales to ANY grid (NumPy eigensolver would die at 2^n).
+    dp_path, dp_fuel = qubo_route.exact_best_dp(cost, start_row, end_row)
     ctx = {"cost": cost, "waves": waves, "start_row": start_row,
            "end_row": end_row, "naive": naive,
-           "naive_fuel": qubo_route.path_fuel(naive, cost)}
+           "naive_fuel": qubo_route.path_fuel(naive, cost),
+           "dp_path": dp_path, "dp_fuel": dp_fuel}
     meta = {"kind": "route", "n_qubits": args.rows * args.cols,
             "title": f"ROUTE - {args.rows}x{args.cols} grid, "
                      f"{args.storms or 1} storm(s)", "unit": "fuel (t)"}
@@ -220,6 +246,7 @@ def build_route_problem(args):
 STYLE = {                       # consistent colours/markers per solver
     "Exact":  ("#16A34A", "*", 22),
     "neal":   ("#1f77b4", "o", 12),
+    "Tabu":   ("#0891B2", "P", 11),
     "GSA":    ("#7C3AED", "v", 11),
     "QAOA":   ("#E8772E", "D", 11),
     "VQE":    ("#D62728", "s", 10),
@@ -326,6 +353,15 @@ def main() -> None:
     p.add_argument("--maxiter", type=int, default=200)
     p.add_argument("--qseed", type=int, default=42,
                    help="seed for QAOA/VQE reproducibility (deterministic runs)")
+    # solver selection + scaling
+    p.add_argument("--solvers", default="exact,neal,gsa,qaoa,vqe",
+                   help="comma list from: exact,neal,tabu,gsa,qaoa,vqe")
+    p.add_argument("--gsa-agents", type=int, default=0,
+                   help="GSA swarm size (0 = auto-scale with problem size)")
+    p.add_argument("--gsa-iters", type=int, default=0,
+                   help="GSA iterations (0 = auto-scale with problem size)")
+    p.add_argument("--max-qubits", type=int, default=18,
+                   help="skip QAOA/VQE above this many qubits (2^n simulator limit)")
     args = p.parse_args()
 
     # Make the gate-model runs reproducible so a divergence is stable for slides.
@@ -347,28 +383,55 @@ def main() -> None:
     print()
 
     qp = qubo_to_qp(qubo)
+    requested = [s.strip().lower() for s in args.solvers.split(",")]
+    gsa_agents = args.gsa_agents or max(80, 4 * n)      # auto-scale GSA effort
+    gsa_iters = args.gsa_iters or max(200, 12 * n)
+    if "gsa" in requested and (args.gsa_agents or args.gsa_iters) == 0:
+        print(f"  GSA effort: {gsa_agents} agents x {gsa_iters} iters (auto-scaled)\n")
 
-    # Exact reference first (so we can score gaps + success) ----------------- #
-    exact_rec = evaluate("Exact (NumPy)", lambda i: run_exact(qp), decode,
-                         float("nan"), trials=1)
+    # Exact reference: DP for routes (scales to any grid), NumPy for speed. ---- #
+    if args.problem == "route":
+        exact_rec = evaluate("Exact (DP)",
+                             lambda i: _path_to_vardict(ctx["dp_path"]),
+                             decode, float("nan"), trials=1)
+    else:
+        exact_rec = evaluate("Exact (NumPy)", lambda i: run_exact(qp), decode,
+                             float("nan"), trials=1)
     exact_fuel = exact_rec["best_fuel"]
     exact_rec["gap"] = 0.0
     exact_rec["successes"] = exact_rec["trials"] = 1
 
-    # Each trial gets its own seed (qseed + i) so multi-trial stats vary and a
-    # single trial (i=0) is exactly reproducible at qseed.
+    # Each trial gets its own seed so multi-trial stats vary and trial 0 is
+    # exactly reproducible. Only the requested solvers run; QAOA/VQE auto-skip
+    # above the simulator's qubit ceiling.
     records = [exact_rec]
-    records.append(evaluate("neal (anneal)", lambda i: run_neal(qubo, seed=42 + i),
-                            decode, exact_fuel, args.trials))
-    records.append(evaluate("GSA (gravity)", lambda i: run_gsa(qubo, seed=args.qseed + i),
-                            decode, exact_fuel, args.trials))
-    records.append(evaluate(
-        "QAOA", lambda i: run_qaoa(qp, args.reps, args.maxiter, seed=args.qseed + i),
-        decode, exact_fuel, args.trials))
-    records.append(evaluate(
-        "VQE", lambda i: run_vqe(qp, n, max(1, args.reps - 1), args.maxiter + 100,
-                                 seed=args.qseed + i),
-        decode, exact_fuel, args.trials))
+    if "neal" in requested:
+        records.append(evaluate("neal (anneal)", lambda i: run_neal(qubo, seed=42 + i),
+                                decode, exact_fuel, args.trials))
+    if "tabu" in requested:
+        records.append(evaluate("Tabu (search)", lambda i: run_tabu(qubo, seed=i),
+                                decode, exact_fuel, args.trials))
+    if "gsa" in requested:
+        records.append(evaluate(
+            "GSA (gravity)",
+            lambda i: run_gsa(qubo, seed=args.qseed + i,
+                              n_agents=gsa_agents, iters=gsa_iters),
+            decode, exact_fuel, args.trials))
+    if "qaoa" in requested:
+        if n <= args.max_qubits:
+            records.append(evaluate(
+                "QAOA", lambda i: run_qaoa(qp, args.reps, args.maxiter, seed=args.qseed + i),
+                decode, exact_fuel, args.trials))
+        else:
+            print(f"  (skipping QAOA: {n} qubits > {args.max_qubits}-qubit simulator limit)")
+    if "vqe" in requested:
+        if n <= args.max_qubits:
+            records.append(evaluate(
+                "VQE", lambda i: run_vqe(qp, n, max(1, args.reps - 1), args.maxiter + 100,
+                                         seed=args.qseed + i),
+                decode, exact_fuel, args.trials))
+        else:
+            print(f"  (skipping VQE: {n} qubits > {args.max_qubits}-qubit simulator limit)")
 
     # --- Metrics table ----------------------------------------------------- #
     print("  COMPARISON METRICS")

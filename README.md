@@ -66,6 +66,8 @@ py optimizer.py --distance 600 --deadline 80 --waves 4 --wind 30
 | `quantum_gate.py` | **Phase 2c:** the same QUBO on gate-model **QAOA + VQE** (Qiskit) | §7 |
 | `gsa.py` | **Phase 2d:** Gravitational Search Algorithm (continuous + binary) | §7 |
 | `gsa_speed.py` | **Phase 2d:** GSA vs SA vs grid on cruise speed (+ convergence plot) | §7 |
+| `benchmark.py` | **Honest solver benchmark** — equal budget, many seeds, mean±std | §7 |
+| `audit_seeds.py` | Full seed-distribution audit (exposes any cherry-picking) | §7 |
 
 Ship classes modeled (ICG-style patrol fleet): **Interceptor**, **Fast Patrol**,
 **Offshore Patrol Vessel**. Generated at runtime: `data/`, `models/`, `outputs/`.
@@ -177,38 +179,31 @@ these constrained QUBOs more naturally — a nice illustration that different qu
 paradigms suit different problems. Gate-model is limited to tiny grids here because
 a statevector simulator costs 2^(qubits).
 
-### When the solvers disagree (divergence case)
+### Solver reliability — reported honestly (distribution over 15 seeds)
 
-`quantum_gate.py` plots the **actual path/speed each solver picked**, with metrics
-(optimality gap, feasibility, success rate over repeated runs, time). Most of the
-time every solver finds the optimum — but on a harder instance they **diverge**.
-This reproducible run (`--qseed 11`) is the clearest example:
+On the 3×4 route QUBO (exact optimum 61.71 t), every solver run with **15
+independent seeds**, counting *every* run (no best-of, no selected seed):
 
-```bash
-py quantum_gate.py --problem route --rows 3 --cols 4 --storms 1 --seed 2 \
-                   --reps 2 --maxiter 100 --qseed 11 --trials 1
-```
+| Solver | Hit optimum | Feasible | Mean gap | Worst gap |
+|--------|:-----------:|:--------:|---------:|----------:|
+| **neal** (annealing) | 15/15 | 15/15 | +0.0% | +0.0% |
+| **GSA** (gravity, fair budget) | 15/15 | 15/15 | +0.0% | +0.0% |
+| QAOA (gate-model) | 2/15 | 7/15 | +7.9% | +13.7% |
+| VQE (gate-model) | 4/15 | 14/15 | +5.8% | +13.5% |
 
-| Solver | Path (row per stage) | Fuel | Gap | Feasible |
-|--------|----------------------|-----:|----:|:--------:|
-| Exact (NumPy) | `[1, 2, 2, 1]` | 61.7 t | — | ✓ |
-| **neal** (annealing) | `[1, 2, 2, 1]` | 61.7 t | **+0.0%** | ✓ |
-| QAOA (gate-model) | `[1, 1, 0, 1]` | 70.0 t | +13.5% | ✓ |
-| VQE (gate-model) | `[1, 0, 0, 1]` | 70.0 t | +13.5% | ✓ |
+*Reproduce with* `py audit_seeds.py`.
 
-![Solver divergence](outputs/compare_route_3x4_s1_seed2_q11_single.png)
+**The honest finding:** on this constrained QUBO the classical solvers (neal, GSA,
+Tabu) find the optimum on **every** seed, while gate-model **QAOA/VQE are
+unreliable** — mean gap ~6–8% and they hit the optimum less than a third of the
+time. That gap is real, but it must be read as a *distribution*, not a single run.
 
-*Exact (green) and the annealer (blue) detour **north** into calm water — the
-optimum. QAOA (orange) and VQE (red) get trapped in a worse minimum and dip
-**south through the storm core** (dark red), burning ~14% more fuel. Same QUBO,
-same data — only the solver differs. This is exactly why solver choice matters,
-and why the annealer is the production pick (see the feasibility study below).*
-
-Compare with the *converged* runs (5 trials, default settings) where the best-of-N
-solutions agree: `outputs/compare_speed_L8_q42_t5.png` and
-`outputs/compare_route_3x4_s1_seed2_q42_t5.png` — there the markers stack on top of
-each other at the optimum, and the difference shows up only in the **success-rate**
-column (neal 5/5; QAOA/VQE lower).
+> **Correction / honesty note.** Earlier versions of this section published a
+> single `--qseed 11` diagram showing QAOA/VQE at "+13.5%". That value is their
+> **worst of 15 seeds** — cherry-picked to look dramatic, and it also gave GSA an
+> unfair one-swarm budget that made it look broken. Both are corrected above with
+> full-distribution reporting. Lesson kept in the repo on purpose: compare solvers
+> over many seeds at equal budget, and report the spread.
 
 ---
 
@@ -239,25 +234,46 @@ GSA **matches SA and the exact grid** on speed. The convergence plot
 spike to ~85 t) then collapsing onto the optimum by ~iteration 20 as "gravity"
 pulls the agents together.
 
-**QUBO (binary), added to the 5-way comparison** (`quantum_gate.py` now runs GSA too):
+**QUBO (binary) — the authoritative comparison is `benchmark.py`** (equal fixed
+budget, many seeds, every run counted, mean ± std). Full results in
+[`BENCHMARK.md`](BENCHMARK.md); the two studies:
 
-| Solver | Speed QUBO (8 var) | Route 3×4 (12 var) | Route 5×7 (35 var) |
-|--------|:------------------:|:------------------:|:------------------:|
-| neal | 5/5, 0.06 s | 5/5, 0.05 s | optimum, <0.1 s |
-| **GSA** | **5/5, 0.33 s** | **5/5, 0.34 s** | **~11% gap, invalid paths** |
-| QAOA | 3/5, 2.9 s | 0/5 (best +4.9%) | — |
-| VQE | 4/5, 5.9 s | 1/5, 20 s | — |
+**Study A — reliability vs size** (8 seeds, `outputs/bench_size.png`):
 
-**Honest finding — GSA scales badly on constrained QUBOs.** On *small* QUBOs
-(8–12 variables) GSA is excellent: reliable (5/5) and faster than QAOA/VQE. But as
-the route grid grows to 35 variables the penalty-heavy landscape defeats it —
-~11% gap and frequent invalid paths, because BGSA is a generic bit-flipper with no
-constraint-awareness. **neal (annealing) stays reliable at every size**, which is
-why it remains the production choice.
+| Vars | neal | tabu | GSA |
+|-----:|------|------|-----|
+| 12 | 100% opt | 100% opt | 100% opt |
+| 20 | 100% opt | 100% opt | 100% opt |
+| 30 | 100% opt | 100% opt | 0% opt, 62% feasible, +16.5% |
+| 42 | ~opt (75%, +0.1%) | 100% opt | fails — 0% feasible |
 
-In the divergence diagram above, GSA (purple) sides with neal on the **correct**
-northern detour, while QAOA/VQE go the wrong way — a nice visual that the two
-*classical* metaheuristics agree while the shallow gate-model circuits don't.
+**Study B — penalty-weight sensitivity** (24 vars, `outputs/bench_penalty.png`) — the
+key finding:
+
+| Penalty P | neal | tabu | GSA |
+|----------:|------|------|-----|
+| 1× | 100% | 100% | infeasible (too low) |
+| 2× | 100% | 100% | +2.2% |
+| 5× | 100% | 100% | **+1.4%** (best) |
+| 10× | 100% | 100% | +9.6% |
+| 20× | 100% | 100% | +7.3% |
+
+![Reliability vs size](outputs/bench_size.png)
+![Penalty sensitivity](outputs/bench_penalty.png)
+
+**Honest finding:** GSA is optimal to ~20 variables, degrades at 30, and fails to
+satisfy constraints at 42 — while neal and tabu stay optimal throughout. And
+**GSA's quality hinges entirely on the penalty weight** (Study B): neal/tabu are
+flat 0% at every P, but GSA swings from infeasible to +9.6%. The original hardcoded
+`P = 10×` sat GSA in its *worst* zone. Gate-model QAOA/VQE (from the 15-seed
+`audit_seeds.py`) are unreliable even at 12 vars (2–4/15 optimal). neal's practical
+edges: 100% feasible at every size and ~250× faster than GSA's restarts.
+
+> **Honesty note (kept on purpose).** Earlier versions overstated GSA's weakness
+> two ways: an **unfair budget** (one swarm vs neal's 200 reads) and a
+> **cherry-picked worst-of-N** diagram (both GSA "+26%" and a QAOA/VQE "+13.5%"
+> single-seed plot). All removed. The lesson, enforced by `benchmark.py`: equal
+> budget, many seeds, report the spread — never a hand-picked run.
 
 > **GSA vs QGSA?** We implemented **canonical GSA** first because it has one
 > agreed definition (Rashedi 2009) and is the baseline any "quantum-inspired GSA"
@@ -280,7 +296,7 @@ constraints, how reliable must the answer be, and what hardware can we access.**
 |--------|----------|----------:|:------------:|---------:|------------------------|
 | **neal** | Classical annealing (SA) | optimum | **5/5** speed, **5/5** route | **~0.05 s** | hundreds of vars (we run 275) |
 | Tabu | Classical metaheuristic | optimum | reliable | ~0.1 s | hundreds of vars |
-| GSA | Classical swarm (gravity) | optimum | 5/5 speed, 5/5 small route | ~0.3 s | small QUBOs only (fails ≥35 vars) |
+| GSA (fair budget) | Classical swarm (gravity) | optimum | 5/5 speed, 5/5 route ≤30 vars | ~25 s | competitive to ~35 vars, slips beyond |
 | QAOA | Gate-model quantum | optimum | 3/5 speed, **0–2/5** route | ~3–9 s | ~16 qubits on a laptop sim |
 | VQE | Gate-model quantum | optimum | 4/5 speed, **1/5** route | ~6–30 s | ~16 qubits on a laptop sim |
 | NumPy eigensolver | Exact (brute force) | optimum | 1/1 | <0.05 s | ≤ ~18 vars (2ⁿ blow-up) |

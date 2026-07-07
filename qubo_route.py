@@ -116,15 +116,19 @@ def cell_costs(pipe, base_scenario, waves, total_nm, cruise_kn):
 # --------------------------------------------------------------------------- #
 # QUBO construction + solve                                                    #
 # --------------------------------------------------------------------------- #
-def build_route_qubo(cost, start_row, end_row, diag_surcharge=0.10):
-    """Build the routing QUBO. Returns (qubo_dict, info)."""
+def build_route_qubo(cost, start_row, end_row, diag_surcharge=0.10,
+                     penalty_mult=10.0):
+    """Build the routing QUBO. Returns (qubo_dict, info).
+
+    `penalty_mult` scales the constraint penalty P = penalty_mult * max(cost).
+    It only needs to exceed the largest single-cell fuel cost so that breaking a
+    constraint is never worth it -- but the *size* of P reshapes the energy
+    landscape, so it is swept in the benchmark (large P makes constraint cliffs
+    that hurt gradient/population solvers; small P risks violations)."""
     n_rows, n_cols = cost.shape
     x = {(c, r): Binary(f"x_{c}_{r}")
          for c in range(n_cols) for r in range(n_rows)}
-    # Penalty just needs to exceed the largest single-cell fuel cost (so breaking
-    # a constraint is never worth it) -- scaling by max (not sum) keeps the energy
-    # range tight, which helps neal optimise the objective finely on big grids.
-    P = 10.0 * float(cost.max())
+    P = penalty_mult * float(cost.max())
 
     H = 0
     # Objective: fuel cost of every occupied cell.

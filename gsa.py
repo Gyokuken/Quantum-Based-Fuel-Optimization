@@ -54,17 +54,18 @@ def _masses(fitness):
 
 def _accelerations(X, M, fitness, G, kbest, rng):
     """GSA acceleration on every agent from the Kbest heaviest agents.
-    a_i = G * sum_j rand * M_j/(R_ij+eps) * (X_j - X_i).  (mass M_i cancels.)"""
+    a_i = G * sum_j rand_ij * M_j/(R_ij+eps) * (X_j - X_i).  (mass M_i cancels.)
+
+    Fully vectorised: pairwise differences + one einsum, no Python loop over
+    agents -- essential so the benchmark harness can run many seeds/sizes."""
     n_agents = X.shape[0]
-    order = np.argsort(fitness)          # ascending: best (heaviest) first
-    kbest_idx = order[:max(1, kbest)]
-    a = np.zeros_like(X)
-    for j in kbest_idx:
-        diff = X[j] - X                              # (N, dim)
-        R = np.linalg.norm(diff, axis=1) + _EPS      # (N,)
-        coeff = rng.random(n_agents) * M[j] / R      # (N,)
-        a += coeff[:, None] * diff
-    return G * a
+    order = np.argsort(fitness)                  # ascending: best (heaviest) first
+    mask = np.zeros(n_agents)
+    mask[order[:max(1, kbest)]] = 1.0            # only Kbest agents exert force
+    D = X[None, :, :] - X[:, None, :]            # D[i,j] = X_j - X_i        (N,N,dim)
+    R = np.linalg.norm(D, axis=2) + _EPS         # pairwise distance         (N,N)
+    W = rng.random((n_agents, n_agents)) * (M * mask)[None, :] / R   # weights (N,N)
+    return G * np.einsum("ij,ijk->ik", W, D)     # a[i] = G * sum_j W_ij D_ij
 
 
 def _kbest(t, iters, n_agents):
