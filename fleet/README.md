@@ -152,6 +152,60 @@ Per-instance behaviour worth naming (all visible in the benchmark output):
   exact repair pass — consistent with the Phase-2/3 finding that flat
   penalty encodings fight the structure of constrained problems.
 
+## Worked example plans (what the optimizer actually produces)
+
+`run_fleet.py` saves a two-panel plot per instance. **How to read them:**
+
+- **Left — the map.** Background is the region's wave field at mid-horizon
+  (pale yellow = calm, dark red = storm core). ★ stars on the west edge are
+  the three ships' home ports. Each arrow is a mission leg (start → end),
+  coloured by the ship the optimizer assigned it to.
+- **Right — the schedule (Gantt).** Each thick bar is a mission occupying its
+  ship from `release → finish` slot; consecutive bars on one row are that
+  ship's serving order. The thin bar under each row is that mission's allowed
+  **start window** `[es, ls]`. Bars are drawn from the *true backtracked
+  schedule* (the timeline that actually achieves the optimum), so bar
+  boundaries are the real hand-off times, not a per-mission approximation.
+
+Every title shows `ALNS total` next to `exact` — they match, i.e. the
+optimizer hit the enumerated optimum on these instances.
+
+### Seed 0 — a clean 3-ship split (20.36 t)
+
+![Fleet plan seed 0](outputs/fleet_plan_seed0.png)
+
+The cheap **Interceptor (green)** absorbs a 3-mission chain M4 → M2 → M3
+(hand-offs at slots 15 and 24), the **Fast Patrol (orange)** takes M0 → M1
+(hand-off at 18 — it must finish M0 by 18 so M1 still starts inside its
+window, which is exactly the timing the corrected Gantt now shows), and the
+big **Offshore Patrol (blue)** takes the single lonely M5. Balanced load, no
+ship overworked.
+
+### Seed 1 — the instance greedy *fails*, ALNS solves (21.14 t)
+
+![Fleet plan seed 1](outputs/fleet_plan_seed1.png)
+
+This is the headline case. Greedy cheapest-insertion **dead-ends here** (it
+paints itself into a corner and cannot place the last mission — the `FAIL` in
+the results table), yet ALNS finds a fully feasible optimal plan. The
+Interceptor runs a tight three-mission chain M0 → M4 → M3 (hand-offs at 13 and
+20) threading between the two storm cores, while Fast Patrol takes M1 → M5 and
+Offshore Patrol covers M2. It is the concrete proof that fleet fuel planning is
+a genuine combinatorial problem, not something a dispatch rule handles.
+
+### Seed 2 — the counter-intuitive optimum: leave a ship in port (15.21 t)
+
+![Fleet plan seed 2](outputs/fleet_plan_seed2.png)
+
+The **Offshore Patrol row is empty** — the optimizer deployed only two of the
+three ships. With all six missions clustered east of a strong central storm,
+loading Fast Patrol (M0 → M2 → M5) and the Interceptor (M4 → M3 → M1) with
+three missions each is cheaper than ever sailing the heavy, thirsty OPV out of
+port. "Don't deploy that ship" is a fleet-level decision a per-voyage optimizer
+literally cannot express, and a human planner tasked with "use your assets"
+would routinely miss. This single plot is the clearest argument for optimizing
+at the fleet level.
+
 ## Honest limitations (v1)
 
 - Synthetic instances; physics coefficients inherited from Phase 1
