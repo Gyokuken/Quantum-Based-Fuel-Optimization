@@ -1,0 +1,3 @@
+# cached oracle tables are large, regenerable artifacts
+outputs/*.npz
+__pycache__/
