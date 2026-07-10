@@ -91,6 +91,45 @@ class Evaluator:
         self._cache[key] = (fuel, finish)
         return fuel, finish
 
+    def ship_schedule(self, ship: scen_mod.Ship, seq):
+        """Recover the TRUE consistent timeline (mission, release, finish) that
+        achieves the optimum total -- by backtracking the Pareto min-plus DP.
+
+        Needed because per-prefix minima do NOT chain: a prefix's cheapest
+        finish may be later than the finish the full sequence requires (an
+        early mission must sometimes finish sooner, burning slightly more, so a
+        later mission still makes its window). Use THIS for schedules/Gantts,
+        never independent prefix evaluations.
+        """
+        sf = self.tables[ship.ship_class]["serve_fuel"]
+        T = sf.shape[2]
+        loc = self.scn.home_loc(ship.id)
+        Fs, choices = [], []
+        F = None
+        for j in seq:
+            if F is None:
+                Fnew = sf[loc, j, 0, :].astype(float)
+                choice = np.zeros(T, dtype=int)
+            else:
+                M = F[:, None] + sf[loc, j, :, :]
+                choice = np.argmin(M, axis=0)
+                Fnew = M[choice, np.arange(T)]
+            if not np.isfinite(Fnew).any():
+                return None
+            Fs.append(Fnew)
+            choices.append(choice)
+            F = Fnew
+            loc = self.scn.end_loc(j)
+        if F is None:
+            return []
+        tf = int(np.argmin(Fs[-1]))
+        chain = []
+        for L in range(len(seq) - 1, -1, -1):
+            t0 = int(choices[L][tf])
+            chain.append((seq[L], t0, tf))            # (mission, release, finish)
+            tf = t0
+        return chain[::-1]
+
     def total(self, plan: dict[int, list[int]]) -> float:
         """Total fleet fuel; INF if any ship's sequence is infeasible or a
         mission is missing/duplicated."""

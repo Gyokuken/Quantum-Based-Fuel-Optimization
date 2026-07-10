@@ -75,10 +75,8 @@ def plot_plan(scn, ev, plan, title, out):
         y = len(scn.ships) - 1 - i
         yticks.append(y)
         ylabels.append(s.name)
-        rel = 0
-        for L in range(1, len(seq) + 1):
-            _, fin = ev.ship_cost(s, tuple(seq[:L]))
-            j = seq[L - 1]
+        # TRUE consistent timeline (backtracked), not per-prefix minima.
+        for (j, rel, fin) in ev.ship_schedule(s, tuple(seq)):
             m = scn.missions[j]
             ax2.barh(y, fin - rel, left=rel, height=0.5, color=col,
                      alpha=0.75, edgecolor="black", lw=0.6)
@@ -86,7 +84,6 @@ def plot_plan(scn, ev, plan, title, out):
                      fontsize=9, color="white", fontweight="bold")
             ax2.plot([m.es, m.ls], [y - 0.38, y - 0.38], color=col, lw=2,
                      alpha=0.5)
-            rel = fin
     ax2.set_yticks(yticks)
     ax2.set_yticklabels(ylabels)
     ax2.set_xlabel("Slot (release -> finish spans; thin bar = start window)")
