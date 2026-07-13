@@ -66,6 +66,7 @@ py optimizer.py --distance 600 --deadline 80 --waves 4 --wind 30
 | `quantum_gate.py` | **Phase 2c:** the same QUBO on gate-model **QAOA + VQE** (Qiskit) | §7 |
 | `gsa.py` | **Phase 2d:** Gravitational Search Algorithm (continuous + binary) | §7 |
 | `gsa_speed.py` | **Phase 2d:** GSA vs SA vs grid on cruise speed (+ convergence plot) | §7 |
+| `qgso.py` | **Phase 2e:** QGSO — quantum-inspired GSA (qubit rotation-gate update) | §7 |
 | `benchmark.py` | **Honest solver benchmark** — equal budget, many seeds, mean±std | §7 |
 | `audit_seeds.py` | Full seed-distribution audit (exposes any cherry-picking) | §7 |
 
@@ -236,38 +237,66 @@ pulls the agents together.
 
 **QUBO (binary) — the authoritative comparison is `benchmark.py`** (equal fixed
 budget, many seeds, every run counted, mean ± std). Full results in
-[`BENCHMARK.md`](BENCHMARK.md); the two studies:
+[`BENCHMARK.md`](BENCHMARK.md); the two studies (10 seeds each):
 
-**Study A — reliability vs size** (8 seeds, `outputs/bench_size.png`):
+**Study A — reliability vs size** (`outputs/bench_size.png`), % optimal / mean gap:
 
-| Vars | neal | tabu | GSA |
-|-----:|------|------|-----|
-| 12 | 100% opt | 100% opt | 100% opt |
-| 20 | 100% opt | 100% opt | 100% opt |
-| 30 | 100% opt | 100% opt | 0% opt, 62% feasible, +16.5% |
-| 42 | ~opt (75%, +0.1%) | 100% opt | fails — 0% feasible |
+| Vars | neal | tabu | GSA | QGSO |
+|-----:|------|------|-----|------|
+| 12 | 100% | 100% | 100% | 100% |
+| 20 | 100% | 100% | 100% | 100% |
+| 24 | 100% | 100% | 0%, +6.1% | **60%, +0.7%** |
+| 30 | 100% | 100% | 0%, 70% feas, +17.0% | **0%, 100% feas, +3.5%** |
+| 42 | 70%, +0.1% | 100% | fails (0% feas) | fails (0% feas) |
 
-**Study B — penalty-weight sensitivity** (24 vars, `outputs/bench_penalty.png`) — the
-key finding:
+**Study B — penalty-weight sensitivity** (24 vars, `outputs/bench_penalty.png`), mean gap:
 
-| Penalty P | neal | tabu | GSA |
-|----------:|------|------|-----|
-| 1× | 100% | 100% | infeasible (too low) |
-| 2× | 100% | 100% | +2.2% |
-| 5× | 100% | 100% | **+1.4%** (best) |
-| 10× | 100% | 100% | +9.6% |
-| 20× | 100% | 100% | +7.3% |
+| Penalty P | neal | tabu | GSA | QGSO |
+|----------:|------|------|-----|------|
+| 1× | 100% | 100% | infeasible | **60% opt, +0.7%** |
+| 2× | 100% | 100% | +3.7% | **+0.5%** |
+| 3× | 100% | 100% | +6.3% | **+2.3%** |
+| 5× | 100% | 100% | +4.4% | **+1.3%** |
+| 10× | 100% | 100% | +6.1% | **+0.7%** |
+| 20× | 100% | 100% | +7.4% | **+1.4%** |
 
 ![Reliability vs size](outputs/bench_size.png)
 ![Penalty sensitivity](outputs/bench_penalty.png)
 
-**Honest finding:** GSA is optimal to ~20 variables, degrades at 30, and fails to
-satisfy constraints at 42 — while neal and tabu stay optimal throughout. And
-**GSA's quality hinges entirely on the penalty weight** (Study B): neal/tabu are
-flat 0% at every P, but GSA swings from infeasible to +9.6%. The original hardcoded
-`P = 10×` sat GSA in its *worst* zone. Gate-model QAOA/VQE (from the 15-seed
-`audit_seeds.py`) are unreliable even at 12 vars (2–4/15 optimal). neal's practical
-edges: 100% feasible at every size and ~250× faster than GSA's restarts.
+**Honest finding:** **neal and tabu win outright** — optimal and penalty-invariant
+at every size (only neal wobbles once, 70% optimal at 42 vars but still +0.1%).
+Both **GSA and QGSO** degrade with size and collapse at 42 vars, and neither
+matches the classical annealers. Gate-model QAOA/VQE (15-seed `audit_seeds.py`)
+are unreliable even at 12 vars.
+
+### Does the *quantum-inspired* twist help? QGSO vs GSA (`qgso.py`)
+
+`qgso.py` implements **QGSO** — quantum-inspired GSA: each agent is a register of
+**qubits** (angle θ, P(bit=1)=sin²θ) that live in superposition and are *measured*
+each iteration; the gravitational pull drives a **quantum rotation gate** instead
+of BGSA's bit-flip. Benchmarked at **identical budget** to GSA (same restarts,
+agents, iterations — only the update rule differs):
+
+![GSA vs QGSO](outputs/bench_gsa_vs_qgso.png)
+
+**QGSO genuinely and consistently beats plain GSA** on this constrained QUBO:
+
+- **Far less penalty-sensitive** — GSA's gap swings +3.7% → +7.4% across penalty
+  weights and goes fully *infeasible* at P=1×; **QGSO stays within +0.5% → +2.3%
+  and feasible at every P**, including P=1×. This is the clearest win — the
+  superposition/rotation-gate update sidesteps the penalty knife-edge that wrecks
+  BGSA.
+- **More reliable at mid-size** — at 24 vars GSA is 0% optimal (+6.1%) vs QGSO
+  60% optimal (+0.7%); at 30 vars GSA drops to 70% feasible (+17%) while QGSO
+  holds 100% feasible (+3.5%).
+- **But not a leap past the tier** — QGSO still trails neal/tabu (which are 0%
+  everywhere), and it does *not* rescue the 42-var collapse (both fail). So the
+  quantum-inspired twist is a real, measured improvement *within* the swarm-
+  metaheuristic tier, not a jump past the classical winners.
+
+This is the honest answer to "is QGSO any good?": **yes, meaningfully better than
+the GSA it's built on — same compute, smoother and far more penalty-robust search —
+but classical annealing still wins this problem.**
 
 > **Honesty note (kept on purpose).** Earlier versions overstated GSA's weakness
 > two ways: an **unfair budget** (one swarm vs neal's 200 reads) and a

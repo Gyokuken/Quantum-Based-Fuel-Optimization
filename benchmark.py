@@ -35,18 +35,30 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import config
+import gsa as gsa_mod
+import qgso as qgso_mod
 import quantum_gate as qg
 
 # ---- FIXED BUDGETS (stated up front; identical across every cell) ---------- #
+# qgso gets the SAME budget as gsa on purpose -- so the only thing measured is
+# the quantum rotation-gate update vs BGSA's bit-flip, not compute.
 BUDGET = {
     "neal": dict(num_reads=200, num_sweeps=1000),
     "tabu": dict(num_reads=200),
     "gsa":  dict(restarts=10, n_agents=100, iters=300),
+    "qgso": dict(restarts=10, n_agents=100, iters=300),
     "qaoa": dict(reps=3, maxiter=200),
     "vqe":  dict(reps=2, maxiter=300),
 }
 CLASSICAL = ["neal", "tabu", "gsa"]
 GATE = ["qaoa", "vqe"]
+
+
+def run_qgso(qubo, seed, n_agents, iters, restarts):
+    """QGSO solve -> {varname: 0/1}; same restart/keep-best scheme as run_gsa."""
+    samp = qgso_mod.QGSOSampler(n_agents=n_agents, iters=iters)
+    ss = samp.sample_qubo(qubo, num_reads=restarts, seed=seed)
+    return {k: int(v) for k, v in dict(ss.first.sample).items()}
 
 
 def make_problem(rows, cols, storms, seed, penalty_mult=10.0):
@@ -68,6 +80,9 @@ def solve_once(solver, qubo, qp, n, decode, s):
     elif solver == "gsa":
         vd = qg.run_gsa(qubo, seed=s, n_agents=b["n_agents"],
                         iters=b["iters"], restarts=b["restarts"])
+    elif solver == "qgso":
+        vd = run_qgso(qubo, seed=s, n_agents=b["n_agents"],
+                      iters=b["iters"], restarts=b["restarts"])
     elif solver == "qaoa":
         vd = qg.run_qaoa(qp, b["reps"], b["maxiter"], seed=s)
     elif solver == "vqe":
@@ -149,7 +164,41 @@ def study_penalty(rows, cols, storms, mults, n_seeds):
 # Plots + markdown                                                             #
 # --------------------------------------------------------------------------- #
 COLORS = {"neal": "#1f77b4", "tabu": "#0891B2", "gsa": "#7C3AED",
-          "qaoa": "#E8772E", "vqe": "#D62728"}
+          "qgso": "#DB2777", "qaoa": "#E8772E", "vqe": "#D62728"}
+
+
+def plot_gsa_vs_qgso(size_res, size_order, pen_res, out):
+    """Dedicated head-to-head: does the quantum-inspired twist beat plain GSA?"""
+    ns = [n for n, _ in size_order]
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4.5))
+    for solver in ("gsa", "qgso"):
+        xs = [n for n in ns if solver in size_res[n]]
+        gap = [size_res[n][solver]["mean_gap"] for n in xs]
+        err = [size_res[n][solver]["std_gap"] for n in xs]
+        feas = [size_res[n][solver]["feas_pct"] for n in xs]
+        ax1.errorbar(xs, gap, yerr=err, marker="o", capsize=3, lw=2,
+                     color=COLORS[solver], label=solver.upper())
+        ax2.plot(xs, feas, marker="o", lw=2, color=COLORS[solver],
+                 label=solver.upper())
+    ax1.axhline(0, color="green", ls="--", lw=1)
+    ax1.set_xlabel("QUBO size (vars)"); ax1.set_ylabel("Optimality gap % (mean±std)")
+    ax1.set_title("Quality vs size"); ax1.legend(); ax1.grid(True, alpha=0.3)
+    ax2.set_xlabel("QUBO size (vars)"); ax2.set_ylabel("Feasibility %")
+    ax2.set_title("Feasibility vs size"); ax2.legend(); ax2.grid(True, alpha=0.3)
+    mults = sorted(pen_res.keys())
+    for solver in ("gsa", "qgso"):
+        ys = [pen_res[pm][solver]["mean_gap"] for pm in mults]
+        es = [pen_res[pm][solver]["std_gap"] for pm in mults]
+        ax3.errorbar(mults, ys, yerr=es, marker="o", capsize=3, lw=2,
+                     color=COLORS[solver], label=solver.upper())
+    ax3.axhline(0, color="green", ls="--", lw=1)
+    ax3.set_xlabel("Penalty ×max cell cost"); ax3.set_ylabel("Optimality gap %")
+    ax3.set_title("Penalty sensitivity (24 vars)"); ax3.legend(); ax3.grid(True, alpha=0.3)
+    fig.suptitle("GSA vs QGSO (quantum-inspired) — equal budget, every seed counted",
+                 fontsize=13, fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(out, dpi=120)
+    plt.close(fig)
 
 
 def plot_size(results, order, out):
@@ -242,7 +291,9 @@ def main() -> None:
                    help="run QAOA/VQE only at or below this size")
     p.add_argument("--storms", type=int, default=2)
     p.add_argument("--gsa-restarts", type=int, default=0,
-                   help="override GSA restart budget (0 = use default 10)")
+                   help="override GSA/QGSO restart budget (0 = use default 10)")
+    p.add_argument("--with-qgso", action="store_true",
+                   help="also benchmark QGSO (quantum-inspired GSA) at equal budget")
     p.add_argument("--quick", action="store_true", help="tiny smoke-test config")
     p.add_argument("--fast", action="store_true",
                    help="~10 min: fewer sizes/seeds, lighter GSA, skip slow "
@@ -251,17 +302,21 @@ def main() -> None:
 
     if args.gsa_restarts:
         BUDGET["gsa"]["restarts"] = args.gsa_restarts
+        BUDGET["qgso"]["restarts"] = args.gsa_restarts
+    if args.with_qgso and "qgso" not in CLASSICAL:
+        CLASSICAL.append("qgso")                      # benchmark it everywhere
 
     if args.quick:
         sizes = [(3, 4), (4, 4), (4, 6)]
         mults = [1, 5, 20]
         args.seeds, args.seeds_b = 4, 3
     elif args.fast:
-        sizes = [(3, 4), (4, 5), (5, 6), (6, 7)]      # 12, 20, 30, 42 vars
-        mults = [1, 2, 5, 10, 20]
-        args.seeds, args.seeds_b = 8, 6
+        sizes = [(3, 4), (4, 5), (4, 6), (5, 6), (6, 7)]  # 12,20,24,30,42 vars
+        mults = [1, 2, 3, 5, 10, 20]
+        args.seeds, args.seeds_b = 10, 10
         args.max_qubits = 0                           # skip gate-model (use audit)
         BUDGET["gsa"]["restarts"] = args.gsa_restarts or 6
+        BUDGET["qgso"]["restarts"] = args.gsa_restarts or 6
     else:
         sizes = [(3, 4), (4, 4), (4, 5), (4, 6), (5, 6), (5, 7), (6, 7)]
         mults = [1, 2, 3, 5, 10, 20]
@@ -278,6 +333,9 @@ def main() -> None:
     config.OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     plot_size(size_res, size_order, config.OUTPUTS_DIR / "bench_size.png")
     plot_penalty(pen_res, 4, 6, config.OUTPUTS_DIR / "bench_penalty.png")
+    if "qgso" in CLASSICAL:
+        plot_gsa_vs_qgso(size_res, size_order, pen_res,
+                         config.OUTPUTS_DIR / "bench_gsa_vs_qgso.png")
     write_markdown(size_res, size_order, pen_res, pen_grid,
                    args.seeds, args.seeds_b, "BENCHMARK.md")
 
