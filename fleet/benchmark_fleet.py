@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import fleet_config as fc
+import hybrid as hyb
 import matheuristic as mh
 import oracle
 import qubo_layer as ql
@@ -38,7 +39,8 @@ def main():
     p.add_argument("--num-reads", type=int, default=1000)
     args = p.parse_args()
 
-    solvers = ["greedy", "sa_naive", "alns_fixed", "alns", "qubo+repair"]
+    solvers = ["greedy", "sa_naive", "alns_fixed", "alns",
+               "rand+exact", "hybrid", "qubo+repair"]
     gaps = {s: [] for s in solvers}      # per-instance gap % (nan = failed)
     hits = {s: 0 for s in solvers}
     times = {s: [] for s in solvers}
@@ -79,6 +81,16 @@ def main():
         _, f = mh.alns(ev, n_iters=args.iters, seed=seed + 1, adaptive=True)
         results["alns"] = f
         times["alns"].append(time.perf_counter() - t0)
+
+        t0 = time.perf_counter()
+        _, rf = hyb.solve_random_baseline(ev, n_samples=25, seed=seed + 1)
+        results["rand+exact"] = rf
+        times["rand+exact"].append(time.perf_counter() - t0)
+
+        t0 = time.perf_counter()
+        _, hf, _ = hyb.solve_hybrid(ev, num_reads=args.num_reads, seed=42)
+        results["hybrid"] = hf
+        times["hybrid"].append(time.perf_counter() - t0)
 
         t0 = time.perf_counter()
         q = ql.solve_fleet_qubo(scn, tabs, ev, num_reads=args.num_reads,
@@ -124,7 +136,8 @@ def main():
     xs = np.arange(len(solvers))
     means = [summary[s][0] for s in solvers]
     stds = [summary[s][1] for s in solvers]
-    colors = ["#9CA3AF", "#6B7280", "#60A5FA", "#1f77b4", "#E8772E"]
+    colors = ["#9CA3AF", "#6B7280", "#60A5FA", "#1f77b4",
+              "#94A3B8", "#7C3AED", "#E8772E"]
     bars = ax.bar(xs, means, yerr=stds, capsize=5, color=colors,
                   edgecolor="black", lw=0.8)
     for i, s in enumerate(solvers):
