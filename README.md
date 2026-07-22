@@ -9,9 +9,59 @@ design) + dynamic (voyage) data, then uses a **quantum-inspired optimizer**
 the arrival deadline** — i.e. data-driven *slow steaming*. CO₂ savings are
 reported too, for IMO/environmental compliance.
 
-> **Phase 1 (prediction + slow-steaming speed optimization) and Phase 2
-> (genuine QUBO optimizers — speed + weather routing) are DONE and run today.**
-> Phase 3 (dashboard) is planned — see the roadmap.
+---
+
+## ⭐ PROJECT STATUS — read this first (handoff for a fresh session)
+
+This project grew well past the original single-ship prototype. Here is the whole
+picture, honestly, so anyone (or a new AI session) can pick it up cold.
+
+### The arc, phase by phase (all DONE unless noted)
+
+| Phase | What it is | Where | Status |
+|-------|-----------|-------|--------|
+| **1** | Synthetic ship data (cubic fuel physics) → ML fuel-rate model (R²≈0.99) → simulated-annealing slow-steaming speed optimizer + CO₂ | root | ✅ done |
+| **2a** | Speed optimization as a **QUBO** (pyqubo + neal) | `qubo_speed.py` | ✅ |
+| **2b** | Weather **routing** as a QUBO (grid, storms) vs exact DP | `qubo_route.py` | ✅ |
+| **2c** | Same QUBO on **gate-model QAOA + VQE** (Qiskit simulator) | `quantum_gate.py` | ✅ |
+| **2d** | **GSA** (Gravitational Search Algorithm), continuous + binary | `gsa.py`, `gsa_speed.py` | ✅ |
+| **2e** | **QGSO** (quantum-inspired GSA) vs GSA | `qgso.py` | ✅ |
+| **HONEST BENCHMARK** | equal budget, many seeds, every run counted, mean±std | `benchmark.py` → `BENCHMARK.md` | ✅ |
+| **4** | **Fleet reformulation** (K ships, M missions w/ time windows, moving weather) + our own optimizer (**ALNS matheuristic**) | `fleet/` | ✅ |
+| **5** | **Quantum-classical HYBRID** (assignment QUBO + exact oracle) + ran on **real IBM quantum hardware** | `fleet/hybrid.py`, `fleet/quantum_qaoa.py` | ✅ |
+| 3 | Streamlit dashboard | — | ⬜ planned, not built |
+
+### The honest headline findings (do NOT overclaim beyond these)
+
+1. **Single voyage is easy** — exact DP solves route+speed instantly. No optimizer (or quantum) is *needed* there; Phase 1–2 are demonstrations.
+2. **On the small route QUBOs:** classical **neal / tabu win** (optimal, penalty-invariant). GSA is penalty-sensitive; **QGSO genuinely beats GSA** (more robust) but still loses to neal. QAOA/VQE (simulated) are unreliable even at 12 qubits.
+3. **The real hard problem is the FLEET** (assignment × sequencing × routing, NP-hard). Our **ALNS matheuristic** beats greedy/human planning by 20–60%.
+4. **The hybrid (assignment QUBO + exact oracle) is the best solver** on 10 fleet instances: **10/10 optimal**, beating ALNS (8/10). An **ablation** (`rand+exact`, random assignments + same exact scoring → 5/10) proves the QUBO earns its keep, not just the exact layer.
+5. **We ran it on a REAL quantum computer** (IBM `ibm_fez`, 156-qubit, job `d9gjv53sbqfc73eoocmg`): 8-qubit instance → found the exact optimum. **BUT** this is a *"runs on real silicon end-to-end"* milestone, **NOT** a quantum performance win — at 8 qubits (16 possible assignments) the exact scorer guarantees the optimum regardless of hardware. No evidence quantum helps yet; needs larger instances.
+6. **"Quantum" clarification:** QUBO is only a problem *description*. The hybrid solves it with **neal = classical** (quantum-*portable*). Real quantum = QAOA on IBM (`fleet/quantum_qaoa.py --backend ibm`). QAOA even there is approximate + noisy, so the classical exact scorer is essential (it recomputes true fuel; the QUBO is only a *pairwise shadow* of the real cost).
+
+### Publication status (my honest read)
+**Not yet peer-review ready.** Synthetic data, tiny scale (M≤6 for exhaustive truth), known methods. **Strong project/report foundation.** To publish: scale up (M=12–20 + a strong baseline like OR-Tools), and run the hybrid on real hardware *at a scale where the classical scorer can't brute-force it*.
+
+### The single most valuable next step
+**Scale-up study: M=12–20, K=5**, with OR-Tools/CP-SAT as a strong baseline, and re-run hybrid vs ALNS vs `rand+exact` there. That's the experiment that reveals whether the QUBO's proposals actually beat classical at real sizes. (Real-hardware QAOA at that scale is the follow-on.)
+
+### Working context a new session MUST know
+- **Honesty is the non-negotiable ethos here.** Earlier in the project, cherry-picked seeds and unequal budgets produced misleading results; the user caught it. Everything now uses equal budgets, many seeds, ablations, and stated caveats. **Never present a cherry-picked or rigged result.**
+- **Do NOT add a `Co-Authored-By: Claude` trailer to commits** in this repo (user requirement; history was rewritten once to strip it).
+- **`fleet/` imports parent files read-only** — do not modify root files from fleet work.
+- **IBM token** is saved in `~/.qiskit` (NOT in the repo). Real-hardware runs use the free Open plan (~10 min QPU/month) — be economical (optimize on simulator, run one circuit on hardware).
+- Repo: **github.com/Gyokuken/Quantum-Based-Fuel-Optimization**, branch `main`. Push cadence: commit + push when the user asks; pushes sometimes time out — retry.
+- Windows, Python 3.13. Two READMEs: **this one** (root, Phases 1–2e) and **`fleet/README.md`** (Phases 4–5, the fleet/hybrid/quantum story).
+
+### Fastest way to see it work
+```bash
+py demo.py                                    # Phase 1: predict + speed optimize
+py benchmark.py --fast --with-qgso            # honest solver benchmark (~20 min)
+cd fleet && py run_fleet.py --seed 0          # fleet plan (map + Gantt)
+cd fleet && py benchmark_fleet.py --seeds 10  # hybrid vs ALNS vs baselines
+cd fleet && py quantum_qaoa.py --backend aer --ships 2 --missions 4   # QAOA (sim)
+```
 
 ---
 
