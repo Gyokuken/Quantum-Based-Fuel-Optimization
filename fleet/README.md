@@ -104,6 +104,33 @@ The gap between `qubo+repair` and `hybrid` **is the lesson**: don't flatten a
 stateful problem into one QUBO — decompose, and give the QUBO only the part that
 is genuinely a QUBO (the assignment).
 
+### Running it on a REAL quantum optimizer — QAOA (`quantum_qaoa.py`)
+
+**Important distinction:** the neal hybrid above uses a QUBO but solves it with
+*classical* simulated annealing — so it is quantum-*portable*, not quantum-*run*.
+`quantum_qaoa.py` closes that gap: it solves the **same assignment QUBO with QAOA**,
+a genuine quantum optimization algorithm, and feeds QAOA's candidate assignments
+into the same exact oracle. The backend is one argument:
+
+- `--backend aer` — a local statevector **simulator** of a quantum computer.
+  Verified end-to-end: on an 8-qubit instance QAOA finds the exact optimum
+  (matches neal + exhaustive). Works today, no account.
+- `--backend ibm` — a **real IBM quantum processor** via Qiskit Runtime. Needs a
+  free IBM Quantum token (`https://quantum.ibm.com/`); the code path is wired and
+  waiting for credentials.
+
+```bash
+py quantum_qaoa.py --backend aer --ships 2 --missions 4    # simulator, runs now
+pip install qiskit-ibm-runtime                             # once, for real hardware
+py quantum_qaoa.py --backend ibm --token YOUR_IBM_TOKEN    # real quantum hardware
+```
+
+**Honest expectation:** on these small, noisy-hardware-unfriendly instances QAOA
+will most likely do *worse* than neal — near-term quantum is not a performance win
+here. The value is a truthful demonstration: the identical QUBO runs on a real
+quantum optimizer, judged by the same exact evaluator. We report whatever it
+returns.
+
 ---
 
 ## Files
@@ -115,6 +142,7 @@ is genuinely a QUBO (the assignment).
 | `oracle.py` | Batched ML rate tables -> time-expanded DP -> Pareto serve tables (cached) |
 | `matheuristic.py` | Evaluator (exact min-plus chaining), greedy/construct, naive SA, ALNS fixed/adaptive, exhaustive |
 | `hybrid.py` | **Quantum-classical hybrid:** assignment QUBO (neal, backend-swappable) + exact oracle scoring + `rand+exact` ablation |
+| `quantum_qaoa.py` | **Real quantum optimizer:** same assignment QUBO solved by **QAOA** on an Aer simulator or a real **IBM QPU** |
 | `qubo_layer.py` | Earlier whole-plan QUBO experiment (position-indexed) -> neal -> repair |
 | `run_fleet.py` | One-command demo: solve one instance, print comparison, save plan plot |
 | `benchmark_fleet.py` | Multi-instance honest benchmark (equal budget, every run counted) |
