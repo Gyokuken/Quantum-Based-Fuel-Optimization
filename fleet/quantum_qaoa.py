@@ -139,6 +139,75 @@ def solve_assignment_qaoa(ev: mh.Evaluator, backend="aer", reps=1, maxiter=80,
     return best_plan, best_f, info
 
 
+def solve_on_hardware(ev: mh.Evaluator, backend_name=None, reps=1, maxiter=60,
+                      shots=4096, topk=25, seed=42, verbose=True):
+    """Run the assignment QUBO on a REAL IBM QPU, quota-economically.
+
+    Strategy (standard for near-term hardware): optimise the QAOA parameters on
+    the local simulator (free, many evaluations), then execute the ONE optimised
+    circuit on the real QPU (a single job, minimal QPU time). The hardware
+    measurement bitstrings are decoded into assignments and scored EXACTLY by the
+    oracle -- identical to the neal/aer hybrids, only the sampler is real silicon.
+    """
+    from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
+    from qiskit_optimization.converters import QuadraticProgramToQubo
+
+    qubo, solo, P = hyb.build_assignment_qubo(ev)
+    qp = qubo_to_qp(qubo)
+    names = [v.name for v in qp.variables]
+    n = len(names)
+
+    # 1. optimise QAOA parameters on the simulator
+    op, _ = QuadraticProgramToQubo().convert(qp).to_ising()
+    pm_sim = generate_preset_pass_manager(optimization_level=1,
+                                          backend=AerSimulator())
+    qaoa = QAOA(sampler=StatevectorSampler(seed=seed),
+                optimizer=COBYLA(maxiter=maxiter), reps=reps, transpiler=pm_sim)
+    res = qaoa.compute_minimum_eigenvalue(op)
+
+    # 2. bind the optimised parameters into the circuit -> measure -> transpile
+    circ = res.optimal_circuit.assign_parameters(res.optimal_point)
+    circ.measure_all()
+    svc = QiskitRuntimeService()
+    backend = (svc.backend(backend_name) if backend_name
+               else svc.least_busy(operational=True, simulator=False))
+    pm_hw = generate_preset_pass_manager(optimization_level=1, backend=backend)
+    isa = pm_hw.run(circ)
+
+    # 3. ONE job on real hardware
+    if verbose:
+        print(f"  submitting 1 job to REAL QPU [{backend.name}] "
+              f"({n} qubits, {shots} shots)...")
+    job = SamplerV2(mode=backend).run([isa], shots=shots)
+    if verbose:
+        print(f"  job id: {job.job_id()}  -- waiting for the quantum computer...")
+    result = job.result()
+    counts = result[0].data.meas.get_counts()
+
+    # 4. decode hardware bitstrings -> assignments -> exact oracle score
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+    best_plan, best_f, scored, seen = None, float("inf"), 0, set()
+    for bits, _cnt in ranked:
+        vd = {names[i]: int(bits[-(i + 1)]) for i in range(n)}
+        assign = hyb.decode_assignment(vd, ev)
+        key = tuple(tuple(sorted(assign[s.id])) for s in ev.scn.ships)
+        if key in seen:
+            continue
+        seen.add(key)
+        f, plan = hyb.exact_score(ev, assign)
+        if f < best_f:
+            best_f, best_plan = f, plan
+        scored += 1
+        if scored >= topk:
+            break
+
+    usage = getattr(job, "usage_estimation", None)
+    info = {"backend": backend.name, "n_qubits": n, "job_id": job.job_id(),
+            "distinct_bitstrings": len(counts), "assignments_scored": scored,
+            "usage": usage}
+    return best_plan, best_f, info
+
+
 if __name__ == "__main__":
     import argparse
 

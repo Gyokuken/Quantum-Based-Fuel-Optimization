@@ -131,6 +131,31 @@ here. The value is a truthful demonstration: the identical QUBO runs on a real
 quantum optimizer, judged by the same exact evaluator. We report whatever it
 returns.
 
+#### It actually ran on real quantum hardware ✅
+
+We executed it — an 8-qubit instance (2 ships × 4 missions) on **IBM's
+`ibm_fez` (a real 156-qubit quantum processor)**, job `d9gjv53sbqfc73eoocmg`:
+
+| Solver | Fuel | Gap |
+|--------|-----:|----:|
+| QAOA on **real IBM QPU** | 33.49 t | **+0.0%** |
+| neal hybrid | 33.49 t | +0.0% |
+| exact optimum | 33.49 t | — |
+
+To stay inside the free QPU quota we used the standard near-term recipe:
+**optimise the QAOA parameters on the simulator, then run the one optimised
+circuit on the QPU** (a single job). The hardware returned 251 distinct
+measured bitstrings; the oracle scored them and produced the optimal plan.
+
+**Read this honestly:** at 8 qubits there are only 2⁴ = 16 possible assignments,
+so the *exact oracle* — scoring the measured bitstrings — is what guarantees the
+optimum; the noisy hardware only had to surface the good assignment somewhere in
+its distribution, which it did. So this is a genuine **"it runs on real quantum
+silicon, end-to-end"** milestone, **not** evidence that quantum out-optimises
+classical (it doesn't, at this scale). The scientific test — does the QPU's
+proposal quality beat classical as the problem grows — needs larger instances and
+is future work.
+
 ---
 
 ## Files
